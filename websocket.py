@@ -25,6 +25,8 @@ def get_arbitrage_list():
 
     return arbitrage_list
 
+# Ref : https://github.com/sharebook-kr/pyupbit/blob/master/pyupbit/websocket_api.py
+
 class WebSocketManager(mp.Process):
     """웹소켓을 관리하는 클래스
         사용 예제:
