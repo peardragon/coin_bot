@@ -5,7 +5,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-
+# 전체적인 안정성 완전히 확인되지 않음
+# 속도를 개선하기 위해 필요한점 ..
 
 class Simulator:
     #  시뮬레이터의 초기화 부
@@ -88,8 +89,6 @@ class Simulator:
             simulation_db[f"{ticker}_position"] = ["close"]
             simulation_db[f"{ticker}_contract_amount"] = [0.0]
             simulation_db[f"{ticker}_rate"] = [0.0]
-            simulation_db[f"{ticker}_limit_order_price_high"] = [0.0]
-            simulation_db[f"{ticker}_limit_order_price_low"] = [0.0]
 
         simulation_db["net_worth"] = [float(self.init_balance)]
 
@@ -110,6 +109,8 @@ class Simulator:
 
         order_list = pd.DataFrame.from_dict(dict(order_list))
         order_list.to_sql(table_name, sql_connect(db_name), index=False, if_exists='replace', method='multi')
+        if not self.save_:
+            self.init_order_list_df = order_list
 
     def get_limit_order_db(self):
         conn = mysql_conn('simulator')
@@ -131,10 +132,19 @@ class Simulator:
         order_list['order_executed_time'] = [executed_time]
 
         order_list = pd.DataFrame.from_dict(dict(order_list))
-        last_index = int(self.total_order_list.index[-1])
-        order_list.to_sql(table_name, sql_connect(db_name), index=last_index + 1, if_exists='append', method='multi')
+        if self.save_:
+            last_index = int(self.total_order_list.index[-1])
+            order_list.to_sql(table_name, sql_connect(db_name), index=last_index + 1, if_exists='append', method='multi')
+        else:
+            self.total_limit_order_df_for_db.append(order_list, ignore_index=True)
+            self.total_limit_order_df_for_db.reset_index(drop=True)
 
     def limit_order_db_check(self, ticker, executed_price):
+        if self.save_:
+            pass
+        else:
+            self.total_order_list = self.total_limit_order_df_for_db
+
         for i in range(len(self.total_order_list)):
             order_list_ticker = self.total_order_list.loc[i].ticker
             if str(order_list_ticker) != str(ticker):
@@ -147,8 +157,11 @@ class Simulator:
             limit_ordered_time = str(self.total_order_list.loc[i].order_executed_time)
             if limit_order_high < self.current_high and gap_high < gap_low:
                 self.total_order_list.drop(i, inplace=True)
-                self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
-                                             if_exists='replace', method='multi')
+                if self.save_:
+                    self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
+                                                 if_exists='replace', method='multi')
+                else:
+                    pass
                 self.limit_total_gain += (limit_order_high - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_high * limit_order_amount
                 self.limit_total_amount += limit_order_amount
@@ -156,20 +169,19 @@ class Simulator:
                 print(self.limit_total_gain, self.limit_total_amount)
             elif limit_order_low > self.current_low and gap_low < gap_high:
                 self.total_order_list.drop(i, inplace=True)
-                self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
-                                             if_exists='replace', method='multi')
+                if self.save_:
+                    self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
+                                                 if_exists='replace', method='multi')
+                else:
+                    pass
                 self.limit_total_gain += (limit_order_low - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_low * limit_order_amount
                 self.limit_total_amount += limit_order_amount
                 self.total_order_executed_time += limit_ordered_time + " "
                 print(self.limit_total_gain, self.limit_total_amount)
 
-    def limit_order_trade(self, ticker, executed_price):
-        total_gain = self.limit_order_db_check(ticker, executed_price)
-        if total_gain == "None":
-            return False
-        else:
-            return True
+
+
 
     # 전체 ticker list 가져오기
     def get_ticker_list(self):
@@ -351,6 +363,7 @@ class Simulator:
         self.current_net_worth = float(self.current_total_db["net_worth"].item())
         self.current_price = float(ticker_df['close'].values[-1])
 
+        # current ticker 에 대한 정보
         self.current_open = float(ticker_df['open'].values[-1])
         self.current_high = float(ticker_df['high'].values[-1])
         self.current_low = float(ticker_df['low'].values[-1])
@@ -360,8 +373,11 @@ class Simulator:
         self.prev_amount = float(self.prev_data[f"current_{ticker}_amount"].item())
         self.prev_price = float(self.prev_data[f"current_{ticker}_price"].item())
         self.prev_executed = float(self.prev_data[f"executed_{ticker}_price"].item())
-        self.prev_contract_amount = float(self.prev_data[f"{ticker}_contract_amount"].item())
         self.prev_position = str(self.prev_data[f"{ticker}_position"].item())
+
+        # future 설정이 존재할 경우 추가적 변수
+        self.prev_contract_amount = float(self.prev_data[f"{ticker}_contract_amount"].item())
+
 
     def init_trader_variables_setting(self):
         # 거래에 따른 총 손익 관련 변수 기본 Setting (모든 ticker 에 대한 total 값)
@@ -378,6 +394,7 @@ class Simulator:
     def init_trader_variables_setting_ticker(self):
         # self.leverage
         # self.self.fee
+        self.sell_ratio = 1
 
         # _amount : 보유 량
         # self.transaction_amount : 거래 자금
@@ -482,8 +499,10 @@ class Simulator:
                     self.update_executed = self.prev_executed
                     # 공매도 포지션 일부 종료에 따른 손익. self.current_amount ( > 0 )만큼 포지션이 종료
                     realized_gain = - self.current_amount * (self.current_price - self.prev_executed)
+                    realized_gain = np.abs(realized_gain) * (1-self.fee) * np.sign(realized_gain)
                     # 지금 양 만큼 이전 계약의 회수
                     realized_contract = coin_contract_amount * self.current_price
+                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_gain)
                     # 닫아진 계약만큼의 손익과 계약금 회수
                     self.update_available = self.current_available + realized_gain + realized_contract
 
@@ -495,9 +514,11 @@ class Simulator:
                     self.update_executed = self.current_price
                     # 공매도 포지션 종료에 따른 손익. self.prev_amount ( < 0) 만큼 포지션이 종료
                     realized_gain = self.prev_amount * (self.current_price - self.prev_executed)
+                    realized_gain = np.abs(realized_gain) * (1-self.fee) * np.sign(realized_gain)
                     # 이전 포지션 계약의 전량 회수
                     realized_contract = self.prev_contract_amount * self.current_price - \
                                         self.update_contract_amount * self.current_price
+                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_contract)
                     # 닫아진 계약만큼의 손익과 계약금 회수
                     self.update_available = self.current_available + realized_gain + realized_contract
 
@@ -534,9 +555,18 @@ class Simulator:
                                      self.current_time, self.limit_low, self.limit_high)
 
     def decision_sell(self):
+        # 전량매도.
         if not self.future:
             if self.prev_amount == 0:
                 self.decision = 'stay'
+            elif self.sell_ratio != 1:
+                self.current_transaction_amount = self.prev_amount * self.sell_ratio * self.prev_executed
+                sold_amount = self.current_transaction_amount * (1 - self.fee)
+                self.update_available = self.current_available + sold_amount
+                self.update_executed = self.prev_executed
+                self.update_amount = self.prev_amount * (1 - self.sell_ratio)
+                self.position = "long"
+                self.rate = (self.current_price - self.update_executed) / self.update_executed * 100
             else:
                 self.current_transaction_amount = self.prev_amount * self.prev_executed
                 sold_amount = self.current_transaction_amount * (1 - self.fee)
@@ -565,8 +595,10 @@ class Simulator:
                     self.update_executed = self.prev_executed
                     # 공매수 포지션 일부 종료에 대한 손익. self.current_amount( < 0) 만큼 포지션이 종료.
                     realized_gain = - self.current_amount * (self.current_price - self.prev_executed)
+                    realized_gain = np.abs(realized_gain) * (1-self.fee) * np.sign(realized_gain)
                     # 지금 양 만큼 이전 계약의 회수
                     realized_contract = coin_contract_amount * self.current_price
+                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_contract)
                     # 닫아진 계약만큼의 손익과 계약금 회수
                     self.update_available = self.current_available + realized_gain + realized_contract
 
@@ -578,9 +610,11 @@ class Simulator:
                     self.update_executed = self.current_price
                     # 공매수 포지션 종료에 따른 손익. self.prev_amount( > 0 ) 만큼 포지션이 종료
                     realized_gain = self.prev_amount * (self.current_price - self.prev_executed)
+                    realized_gain = np.abs(realized_gain) * (1- self.fee) * np.sign(realized_gain)
                     # 이전 포지션 계약의 전량 회수
                     realized_contract = self.prev_contract_amount * self.current_price - \
                                         self.update_contract_amount * self.current_price
+                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_contract)
                     # 닫아진 계약만큼의 손익과 계약금 회수
                     self.update_available = self.current_available + realized_gain + realized_contract
 
@@ -652,8 +686,10 @@ class Simulator:
             # self.prev_amout < 0 then self.current_price 가 낮아야 이득.
             # self.prev_amout > 0 then self.current_price 가 높아야 이득.
             realized_gain = self.prev_amount * (self.current_price - self.prev_executed)
+            realized_gain = np.abs(realized_gain) * (1-self.fee) * np.sign(realized_gain)
             # 이전 계약 전체회수
             realized_contract = self.prev_contract_amount * self.current_price
+            realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_contract)
             self.update_available = self.current_available + realized_gain + realized_contract
             self.position = 'close'
         else:
@@ -679,9 +715,6 @@ class Simulator:
         self.update_db[f"{ticker}_position"] = [self.position]
         self.update_db[f"{ticker}_rate"] = [self.rate]
         self.update_db[f"{ticker}_contract_amount"] = [self.update_contract_amount]
-        # TODO change below
-        self.update_db[f"{ticker}_limit_order_price_high"] = [0.0]
-        self.update_db[f"{ticker}_limit_order_price_low"] = [0.0]
 
         # self.update_db["net_worth"]=[update_net_worth]
         self.update_db = pd.DataFrame.from_dict(dict(self.update_db))
@@ -691,7 +724,6 @@ class Simulator:
             self.total_eval += np.abs(self.update_amount * self.current_price)
         else:
             self.total_contract += self.update_contract_amount * self.current_price
-            # total_realized_gain += realized_gain
 
         self.current_total_db.update(self.update_db)
 
@@ -715,12 +747,11 @@ class Simulator:
         # 현재가 - 종가.
         # 수수료 계산 - amount 를 적게 처리. - 매수
         # 거래 후 정산금액을 적게 처리 - 매도.
-
+    #TODO 청산시 그 계액만 없애고 다시 시작하게 하는 코드 추가 필요.
     def early_stopping(self):
         if self.liquidation:
             print("청산.")
-            import sys
-            sys.exit()
+            return True
 
     def simulation_trading(self):
 
@@ -735,6 +766,9 @@ class Simulator:
         # 한번에 저장하는 방식을 결정한 경우, df 에 대한 초기화가 필요.
         if not self.save_:
             self.total_df_for_db = self.init_simulation_df
+
+            if self.limit:
+                self.total_limit_order_df_for_db = self.init_order_list_df
 
         n = self.observed_rows
         # self.current_time 을 가지는 simulation row 를 DB 에 쌓아가며 simulation 을 진행.
@@ -761,24 +795,26 @@ class Simulator:
                 if self.limit:
                     self.get_limit_order_db()
                     self.limit_order_db_check(ticker, self.prev_executed)
+                    if not self.save_:
+                        self.total_limit_order_df_for_db.reset_index(drop=True)
                     if self.limit_total_gain != 0.0:
                         print(f"Limit Order at {self.total_order_executed_time} be Signed")
                         self.prev_amount -= self.limit_total_amount
                         if self.prev_amount == 0:
                             self.prev_executed = 0
                         if self.future:
-                            update_contract_amount = self.prev_amount / self.leverage
-                            current_realized_contract_gain = \
-                                np.abs(self.prev_contract_amount - update_contract_amount) * self.current_price
+                            update_contract_amount = np.abs(self.prev_amount / self.leverage)
+                            current_realized_contract_gain = (self.prev_contract_amount - update_contract_amount) * self.current_price
+                            current_realized_contract_gain = np.abs(current_realized_contract_gain) * (1-self.fee) * np.sign(current_realized_contract_gain)
                             self.prev_contract_amount = update_contract_amount
-                            self.current_available += self.limit_total_gain * (1 - self.fee) \
-                                                      + current_realized_contract_gain
-                            self.current_net_worth += self.limit_total_gain * (1 - self.fee) \
-                                                      + current_realized_contract_gain
+                            self.limit_total_gain = np.abs(self.limit_total_gain) * (1-self.fee) * np.sign(self.limit_total_gain)
+                            total_realized_gain = self.limit_total_gain + current_realized_contract_gain
+                            self.current_available += total_realized_gain
+                            self.current_net_worth += total_realized_gain
                         else:
 
-                            self.current_available += self.limit_total_transaction * (1 - self.fee)
-                            self.current_net_worth += self.limit_total_transaction * (1 - self.fee)
+                            self.current_available += np.abs(self.limit_total_transaction) * (1 - self.fee) * np.sign(self.limit_total_transaction)
+                            self.current_net_worth += np.abs(self.limit_total_transaction) * (1 - self.fee) * np.sign(self.limit_total_transaction)
 
                 if self.decision == 'buy':
                     self.decision_buy()
@@ -797,7 +833,8 @@ class Simulator:
 
             self.update_net_worth()
             self.saving_row()
-            self.early_stopping()
+            if self.early_stopping():
+                break
 
         if not self.save_:
             self.total_df_for_db.to_sql(self.simulation_table_name,
