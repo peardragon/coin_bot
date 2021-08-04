@@ -378,6 +378,11 @@ class Simulator:
         # future 설정이 존재할 경우 추가적 변수
         self.prev_contract_amount = float(self.prev_data[f"{ticker}_contract_amount"].item())
 
+    def early_stopping(self):
+        if self.current_open == 0:
+            return True
+
+
 
     def init_trader_variables_setting(self):
         # 거래에 따른 총 손익 관련 변수 기본 Setting (모든 ticker 에 대한 total 값)
@@ -701,7 +706,10 @@ class Simulator:
             # self.current_price < self.update_executed : self.update_amount < 0 이면 이득
 
             if self.rate < 0 and self.update_contract_amount < np.abs(self.update_amount * (self.rate / 100)):
-                self.liquidation = True
+                print(f"{self.trading_ticker} 청산.")
+                self.update_contract_amount = 0
+                self.position = 'close'
+                self.rate = 0
 
     def create_ticker_update_db(self, ticker):
         self.update_db = defaultdict(list)
@@ -742,17 +750,10 @@ class Simulator:
             print(f"{self.current_time} self.decision - To DataFrame ")
             self.total_df_for_db = self.total_df_for_db.append(self.current_total_db, ignore_index=True)
 
-
     # 실제 trading simulation 부분
         # 현재가 - 종가.
         # 수수료 계산 - amount 를 적게 처리. - 매수
         # 거래 후 정산금액을 적게 처리 - 매도.
-    #TODO 청산시 그 계액만 없애고 다시 시작하게 하는 코드 추가 필요.
-    def early_stopping(self):
-        if self.liquidation:
-            print("청산.")
-            return True
-
     def simulation_trading(self):
 
         print("Setting Simulator DB ...")
@@ -791,6 +792,7 @@ class Simulator:
                 self.init_trader_variables_setting_ticker()
                 self.init_limit_setting_ticker()
                 self.setting_trader_ticker_df(ticker, data)
+                if self.early_stopping(): break
 
                 if self.limit:
                     self.get_limit_order_db()
