@@ -5,8 +5,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-# 전체적인 안정성 완전히 확인되지 않음
-# 속도를 개선하기 위해 필요한점 ..
+# 안정성 테스트
+# (Future, DB init, Save, Limit)
+# y,y,y,y == y,y,n,y
 
 class Simulator:
     #  시뮬레이터의 초기화 부
@@ -122,6 +123,8 @@ class Simulator:
         conn.close()
 
     def limit_order_add(self, ticker, amount, executed_time, limit_low, limit_high):
+        if amount == 0:
+            return None
         db_name = 'simulator'
         table_name = self.simulation_order_list
         order_list = defaultdict(list)
@@ -139,6 +142,9 @@ class Simulator:
             self.total_limit_order_df_for_db.append(order_list, ignore_index=True)
             self.total_limit_order_df_for_db.reset_index(drop=True)
 
+
+    # limit order 이 되었을 때, 음의 gain 이 발생할 경우 available 업데이트
+    # 손해서보는 지정가 매도가 계속하여 발생하는 경우, availabe 이 음수로 바뀜.
     def limit_order_db_check(self, ticker, executed_price):
         if self.save_:
             pass
@@ -157,31 +163,22 @@ class Simulator:
             limit_ordered_time = str(self.total_order_list.loc[i].order_executed_time)
             if limit_order_high < self.current_high and gap_high < gap_low:
                 self.total_order_list.drop(i, inplace=True)
-                if self.save_:
-                    self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
-                                                 if_exists='replace', method='multi')
-                else:
-                    pass
                 self.limit_total_gain += (limit_order_high - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_high * limit_order_amount
                 self.limit_total_amount += limit_order_amount
                 self.total_order_executed_time += limit_ordered_time + " "
-                print(self.limit_total_gain, self.limit_total_amount)
+                # print(self.limit_total_gain, self.limit_total_amount)
             elif limit_order_low > self.current_low and gap_low < gap_high:
                 self.total_order_list.drop(i, inplace=True)
-                if self.save_:
-                    self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
-                                                 if_exists='replace', method='multi')
-                else:
-                    pass
                 self.limit_total_gain += (limit_order_low - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_low * limit_order_amount
                 self.limit_total_amount += limit_order_amount
                 self.total_order_executed_time += limit_ordered_time + " "
-                print(self.limit_total_gain, self.limit_total_amount)
+                # print(self.limit_total_gain, self.limit_total_amount)
 
-
-
+        if self.save_:
+            self.total_order_list.to_sql(self.simulation_order_list, sql_connect('simulator'), index=False,
+                                         if_exists='replace', method='multi')
 
     # 전체 ticker list 가져오기
     def get_ticker_list(self):
@@ -319,6 +316,14 @@ class Simulator:
             self.simulation_table_name = self.total_table_name + "_simulation"
             self.simulation_order_list = self.total_table_name + "_order_list"
 
+        if self.limit:
+            self.simulation_table_name += "_limit"
+
+        if self.save_:
+            self.simulation_table_name += "_saved"
+            self.simulation_order_list += "_saved"
+
+
         if not table_exist("simulator", self.simulation_table_name) or self.init is True:
             self.make_simulation_db(self.simulation_table_name, self.ticker_list_for_db, self.simulator_start_time)
         else:  # 계속진행 가능하게 함수로 - resume simulation
@@ -330,14 +335,15 @@ class Simulator:
             conn.close()
 
     # prev_time 이라는 time 에 대해, DB 에서 해당되는 time - 행을 읽어 prev_data 를 DataFrame 으로 저장
-    def get_prev_row(self, prev_time):
+    def get_prev_row(self):
         conn = mysql_conn('simulator')
         cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {self.simulation_table_name} WHERE time = '{prev_time}'")
+        cur.execute(f"SELECT * FROM {self.simulation_table_name} ORDER BY time DESC LIMIT 1")
         columns = [i[0] for i in cur.description]
-        self.prev_data = pd.DataFrame(cur.fetchall(), columns=columns)
+        prev_data = pd.DataFrame(cur.fetchall(), columns=columns)
         cur.close()
         conn.close()
+        return prev_data
 
     def setting_trader_ticker_df(self, ticker, data):
         columns = ['time', f'{ticker}_open', f'{ticker}_low', f'{ticker}_high', f'{ticker}_close',
@@ -381,8 +387,6 @@ class Simulator:
     def early_stopping(self):
         if self.current_open == 0:
             return True
-
-
 
     def init_trader_variables_setting(self):
         # 거래에 따른 총 손익 관련 변수 기본 Setting (모든 ticker 에 대한 total 값)
@@ -446,7 +450,7 @@ class Simulator:
     def setting_prev_data(self):
         if self.save_:
 
-            self.get_prev_row(self.current_time - timedelta(minutes=1))
+            self.prev_data = self.get_prev_row()
             # 만약, 초기화 상태라면 prev_time = self.simulation_start_time
             # 이미 simulation 을 진행하고 있었더라면, prev_time 은 simulated_time 으로 결정
 
@@ -456,6 +460,7 @@ class Simulator:
             # 이미 형성된 DB 에서, 진행된 시각이 현재시각보다 같을때 까지, 반복문을 skip
             if str(simulated_time) >= str(self.current_time):
                 self.skip = True
+                return None
 
             # 이전 행을 기준으로 현재 시간에 대한 db 생성.
             # 결국, self.current_time 에 대한 데이터를 이번에 쌓은 과정.
@@ -483,10 +488,6 @@ class Simulator:
                 if self.update_executed != 0:
                     self.rate = (self.current_price - self.update_executed) / self.update_executed * 100
 
-            if self.limit == True:
-                self.limit_order_add(self.trading_ticker, self.current_amount,
-                                     self.current_time, self.limit_low, self.limit_high)
-
         # Future
         else:
             contract_amount = round(self.buy_ratio * self.init_balance, 0)
@@ -507,7 +508,7 @@ class Simulator:
                     realized_gain = np.abs(realized_gain) * (1-self.fee) * np.sign(realized_gain)
                     # 지금 양 만큼 이전 계약의 회수
                     realized_contract = coin_contract_amount * self.current_price
-                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_gain)
+                    realized_contract = np.abs(realized_contract) * (1-self.fee) * np.sign(realized_contract)
                     # 닫아진 계약만큼의 손익과 계약금 회수
                     self.update_available = self.current_available + realized_gain + realized_contract
 
@@ -555,9 +556,9 @@ class Simulator:
                     self.position = 'long'
                     self.rate = (self.current_price - self.update_executed) / self.update_executed * 100
 
-            if self.limit == True:
-                self.limit_order_add(self.trading_ticker, self.current_amount,
-                                     self.current_time, self.limit_low, self.limit_high)
+        if self.limit and self.decision == 'buy':
+            self.limit_order_add(self.trading_ticker, self.current_amount,
+                                 self.current_time, self.limit_low, self.limit_high)
 
     def decision_sell(self):
         # 전량매도.
@@ -651,9 +652,9 @@ class Simulator:
                     self.position = 'short'
                     self.rate = -(self.current_price - self.update_executed) / self.update_executed * 100
 
-            if self.limit == True:
-                self.limit_order_add(self.trading_ticker, self.current_amount,
-                                     self.current_time, self.limit_low, self.limit_high)
+        if self.limit and self.decision == 'sell':
+            self.limit_order_add(self.trading_ticker, self.current_amount,
+                                 self.current_time, self.limit_low, self.limit_high)
 
     def decision_stay(self):
         self.update_available = self.current_available
@@ -735,6 +736,7 @@ class Simulator:
 
         self.current_total_db.update(self.update_db)
 
+    # net_worth
     def update_net_worth(self):
         update_net_worth = self.current_total_db['available'].item() + self.total_eval \
             if not self.future else self.current_total_db["available"].item() + self.total_contract
@@ -743,11 +745,11 @@ class Simulator:
 
     def saving_row(self):
         if self.save_:
-            print(f"{self.current_time} self.decision - To DB ")
+            print(f"{self.current_time} Decision - To DB ")
             self.current_total_db.to_sql(self.simulation_table_name,
                                          sql_connect('simulator'), index=False, if_exists='append')
         else:
-            print(f"{self.current_time} self.decision - To DataFrame ")
+            print(f"{self.current_time} Decision - To DataFrame ")
             self.total_df_for_db = self.total_df_for_db.append(self.current_total_db, ignore_index=True)
 
     # 실제 trading simulation 부분
@@ -764,7 +766,7 @@ class Simulator:
 
         print(f"Tickers : {self.ticker_list_for_db}")
 
-        # 한번에 저장하는 방식을 결정한 경우, df 에 대한 초기화가 필요.
+        # 한번에 저장하는 방식을 결정한 경우, df 에 대한 초기화가 최초에 한하여 필요.
         if not self.save_:
             self.total_df_for_db = self.init_simulation_df
 
@@ -781,12 +783,16 @@ class Simulator:
             # 시간 설정 및 이전 열 데이터 불러오기, rows 마다 필요한 초기화 설정
             self.current_time = data.tail(1).time.item()
             self.setting_prev_data()
-            if self.skip: continue
+            if self.skip:
+                continue
             self.init_trader_variables_setting()
 
             print(f"{self.current_time} Decision - ticker_list ")
 
             for ticker in self.ticker_list_for_db:
+
+                # TimeChecker start
+                start_time = time.time()
 
                 self.trading_ticker = ticker
                 self.init_trader_variables_setting_ticker()
@@ -794,29 +800,46 @@ class Simulator:
                 self.setting_trader_ticker_df(ticker, data)
                 if self.early_stopping(): break
 
+                # TimeChecker fin
+                print(f"Prev Data checker time {time.time() - start_time}")
+
+                # 거래를 시작하기 전, limit order 에 대해 계산할것을 고려
+                # 업데이트가 필요한 변수들 : prev_amount, prev_contract_amount, current_available
+
+                # TimeChecker start
+                start_time = time.time()
+
                 if self.limit:
-                    self.get_limit_order_db()
-                    self.limit_order_db_check(ticker, self.prev_executed)
                     if not self.save_:
                         self.total_limit_order_df_for_db.reset_index(drop=True)
+                    else:
+                        self.get_limit_order_db()
+
+                    self.limit_order_db_check(ticker, self.prev_executed)
                     if self.limit_total_gain != 0.0:
                         print(f"Limit Order at {self.total_order_executed_time} be Signed")
+                        print(ticker, self.prev_amount, self.limit_total_amount)
                         self.prev_amount -= self.limit_total_amount
                         if self.prev_amount == 0:
                             self.prev_executed = 0
                         if self.future:
                             update_contract_amount = np.abs(self.prev_amount / self.leverage)
-                            current_realized_contract_gain = (self.prev_contract_amount - update_contract_amount) * self.current_price
-                            current_realized_contract_gain = np.abs(current_realized_contract_gain) * (1-self.fee) * np.sign(current_realized_contract_gain)
+                            current_realized_contract = (self.prev_contract_amount - update_contract_amount) * self.current_price
+                            current_realized_contract = np.abs(current_realized_contract) * (1-self.fee)
                             self.prev_contract_amount = update_contract_amount
                             self.limit_total_gain = np.abs(self.limit_total_gain) * (1-self.fee) * np.sign(self.limit_total_gain)
-                            total_realized_gain = self.limit_total_gain + current_realized_contract_gain
+                            total_realized_gain = self.limit_total_gain + current_realized_contract
+                            print(self.limit_total_gain, current_realized_contract)
+                            print(total_realized_gain)
                             self.current_available += total_realized_gain
-                            self.current_net_worth += total_realized_gain
                         else:
-
                             self.current_available += np.abs(self.limit_total_transaction) * (1 - self.fee) * np.sign(self.limit_total_transaction)
-                            self.current_net_worth += np.abs(self.limit_total_transaction) * (1 - self.fee) * np.sign(self.limit_total_transaction)
+
+                # TimeChecker fin
+                print(f"limit checker time {time.time() - start_time}")
+
+                # TimeChecker start
+                start_time = time.time()
 
                 if self.decision == 'buy':
                     self.decision_buy()
@@ -833,16 +856,27 @@ class Simulator:
                 self.liquidation_check()
                 self.create_ticker_update_db(ticker)
 
+                # TimeChecker fin
+                print(f"Decision checker time {time.time() - start_time}")
+
+            # TimeChecker start
+            start_time = time.time()
+
             self.update_net_worth()
             self.saving_row()
             if self.early_stopping():
                 break
 
+            # TimeChecker fin
+            print(f"Update checker time {time.time() - start_time}")
+
+
         if not self.save_:
             self.total_df_for_db.to_sql(self.simulation_table_name,
                                     sql_connect('simulator'), index=False, if_exists='replace')
 
-
+# TODO
+# 시간이 너무 많이드는 부분 - 최소한의 connection 을 limit process 에 적용할 수 있는가 ?
 if __name__ == "__main__":
     start_time = time.time()
     s = Simulator(1000000, 0)
