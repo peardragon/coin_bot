@@ -1,4 +1,3 @@
-
 from mysql_func import *
 
 import pandas as pd
@@ -101,7 +100,7 @@ class Collector:
             return True, date_unix[0][0]
 
     def update_start_time(self, init_symbol, start_time, fin_time):
-        # 받아온 시간을 unixtime 으로 변경
+        # 받아온 시간을 unix_time 으로 변경
         start_time_unix = int(datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").timestamp())
         fin_time_unix = int(datetime.strptime(fin_time, "%Y-%m-%d %H:%M:%S").timestamp())
 
@@ -112,19 +111,18 @@ class Collector:
         # 업데이트가 필요한 경우, start_time_unix 를 업데이트가 진행된 곳 바로 다음 분 단위로 설정.
         # print 는 한국시간 단위이기 때문에, +9h 를 하여 출력.
         if update_check:
-            db_date = datetime.strftime(datetime.utcfromtimestamp(date_unix+9*60*60), "%Y%m%d")
+            db_date = datetime.strftime(datetime.utcfromtimestamp(date_unix + 9 * 60 * 60), "%Y%m%d")
             print(f"{init_symbol} MIN DB 가 {db_date}까지 이미 존재. Continue")
             start_time_unix = date_unix + 60
             return start_time_unix, fin_time_unix
 
         else:
-            db_date = datetime.strftime(datetime.utcfromtimestamp(date_unix+9*60*60), "%Y%m%d")
+            db_date = datetime.strftime(datetime.utcfromtimestamp(date_unix + 9 * 60 * 60), "%Y%m%d")
             print(f"{init_symbol} MIN DB 가 {db_date}까지 업데이트 되어있음. Continue")
             return None, None
 
-
-
-    def get_data_from_url(self, symbol, start_time_unix, iteration, divide_int):
+    @staticmethod
+    def get_data_from_url(symbol, start_time_unix, iteration, divide_int):
         start_time = start_time_unix + iteration * divide_int
         fin_time = start_time_unix + (iteration + 1) * divide_int
         start_time = int(start_time)
@@ -132,7 +130,7 @@ class Collector:
         url = f"https://crix-api-tv.upbit.com/v1/crix/tradingview/history?" \
               f"symbol={symbol}&resolution=1&from={int(start_time)}&to={int(fin_time)}"
 
-        # unixtime 을 간격으로 하여 url 접속 및 데이터를 df 형태로 받아오기.
+        # unix_time 을 간격으로 하여 url 접속 및 데이터를 df 형태로 받아오기.
 
         res = requests.get(url)
         html = res.text
@@ -141,16 +139,23 @@ class Collector:
         result = soup.find('body').text
         hist_dict = json.loads(result)
 
-        return hist_dict, url
+        return hist_dict, url, fin_time
 
-    def data_processing(self, hist_dict):
-        # DATAFRAME 생성
-
+    # noinspection DuplicatedCode
+    @staticmethod
+    def columns_setting(hist_dict):
         hist_df = pd.DataFrame.from_dict(hist_dict)
         hist_df['t'] = pd.to_datetime(hist_df['t'], unit='ms')  # raw data 가 ms 기준으로 되어있음에 유의.
         hist_df['t'] = pd.DatetimeIndex(hist_df['t']) + timedelta(hours=9)  # 한국시간으로변경
         hist_df = hist_df.rename(
             columns={"t": "time", "o": "open", "l": "low", "h": "high", "c": "close", "v": "volume"})
+
+        return hist_df
+
+    def data_processing(self, hist_dict):
+        # DATAFRAME 생성
+
+        hist_df = self.columns_setting(hist_dict)
 
         hist_df['close'] = hist_df.close.fillna(method='ffill')
         hist_df['open'] = hist_df.open.fillna(hist_df['close'])
@@ -163,6 +168,7 @@ class Collector:
 
     def update_db(self, symbol, init_symbol, hist_df, fin_time):
         # DB에 저장 및, update_checker 의 최종 업데이트 시각 업데이트.
+        # conn 이 많이 쓰이지만, crawling 의 저장 안정성을 위해 불가피.
 
         hist_df.to_sql(str(symbol).lower(), self.db_engine, if_exists='append', index=False)
         print(f"{symbol} 테이블 생성완료!")
@@ -176,7 +182,6 @@ class Collector:
         self.db_conn.commit()
         print(f"{symbol} set update_date : {fin_time_datetime}")
 
-
     # 특정 Symbol(ticker) 에 대한 분별 데이터 크롤링 및 DB 저장
     def coin_min_craw(self, symbol, init_symbol, start_time, fin_time):
         symbol = symbol.replace(" ", "")
@@ -185,14 +190,15 @@ class Collector:
             # 업데이트가 덜된 부분을 하루단위로 craw
 
             # unix time difference to day_ delta
-            time_delta_day = int((fin_time_unix - start_time_unix)/(60*60*24))
+            time_delta_day = int((fin_time_unix - start_time_unix) / (60 * 60 * 24))
             divide_int = (fin_time_unix - start_time_unix) / time_delta_day
 
             # 업데이트까지 완전히 되기위해 time_delta_day 만큼 일 단위의 업데이트가 필요.
             # 반복문을 통해 반복 craw & DB save
             for i in range(int(time_delta_day)):
 
-                hist_dict, url = self.get_data_from_url(symbol, start_time_unix, iteration=i, divide_int=divide_int)
+                hist_dict, url, fin_time = self.get_data_from_url(symbol, start_time_unix, iteration=i,
+                                                                  divide_int=divide_int)
 
                 if hist_dict['s'] == 'ok':
                     del (hist_dict['s'])
@@ -212,7 +218,8 @@ class Collector:
         # replace : 삭제 후 재생성. #append : 추가. #fail : 있을경우, continue
 
     # ticker 를 craw 를 위한 형태로 변환
-    def ticker_trans_for_craw(self, ticker):
+    @staticmethod
+    def ticker_trans_for_craw(ticker):
         init_ticker = ticker
         string = ticker.replace("-", " ")
         split_strings = string.split()
@@ -230,6 +237,9 @@ class Collector:
         for ticker in ticker_list:
             init_ticker, ticker = self.ticker_trans_for_craw(ticker)
             self.coin_min_craw(ticker, init_ticker, start_time, fin_time)
+
+    # 데이터 입력이 오류로 인해 잘못되었을 경우, 완전히 Ticker DB 를 새로 받기 위해서는,
+    # update_checker 에서 해당 ticker 의 update_date_time 을 0 으로 변경하고, table 삭제 후 .py 실행
 
 
 if __name__ == '__main__':

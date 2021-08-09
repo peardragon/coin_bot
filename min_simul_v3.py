@@ -9,6 +9,19 @@ import time
 # (Future, DB init, Save, Limit)
 # y,y,y,y == y,y,n,y
 
+from functools import wraps
+
+def timed(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = datetime.now()
+        result = func(*args, **kwargs)
+        end = datetime.now()
+        print(f'Success. {end-start} taken for {func.__name__}')
+        return result
+    return wrapper
+
+
 class Simulator:
     #  시뮬레이터의 초기화 부
     #  시작 초기 자본 및 future 거래 여부 설정.
@@ -137,10 +150,10 @@ class Simulator:
         order_list = pd.DataFrame.from_dict(dict(order_list))
         if self.save_:
             last_index = int(self.total_order_list.index[-1])
-            order_list.to_sql(table_name, sql_connect(db_name), index=last_index + 1, if_exists='append', method='multi')
+            order_list.to_sql(table_name, sql_connect(db_name), if_exists='append', method='multi')
         else:
             self.total_limit_order_df_for_db.append(order_list, ignore_index=True)
-            self.total_limit_order_df_for_db.reset_index(drop=True)
+            self.total_limit_order_df_for_db.reset_index(drop=True, inplace=True)
 
 
     # limit order 이 되었을 때, 음의 gain 이 발생할 경우 available 업데이트
@@ -791,27 +804,21 @@ class Simulator:
 
             for ticker in self.ticker_list_for_db:
 
-                # TimeChecker start
-                start_time = time.time()
-
                 self.trading_ticker = ticker
                 self.init_trader_variables_setting_ticker()
                 self.init_limit_setting_ticker()
                 self.setting_trader_ticker_df(ticker, data)
-                if self.early_stopping(): break
+                if self.early_stopping():
+                    break
 
-                # TimeChecker fin
-                print(f"Prev Data checker time {time.time() - start_time}")
 
                 # 거래를 시작하기 전, limit order 에 대해 계산할것을 고려
                 # 업데이트가 필요한 변수들 : prev_amount, prev_contract_amount, current_available
 
-                # TimeChecker start
-                start_time = time.time()
 
                 if self.limit:
                     if not self.save_:
-                        self.total_limit_order_df_for_db.reset_index(drop=True)
+                        self.total_limit_order_df_for_db.reset_index(drop=True, inplace=True)
                     else:
                         self.get_limit_order_db()
 
@@ -835,11 +842,6 @@ class Simulator:
                         else:
                             self.current_available += np.abs(self.limit_total_transaction) * (1 - self.fee) * np.sign(self.limit_total_transaction)
 
-                # TimeChecker fin
-                print(f"limit checker time {time.time() - start_time}")
-
-                # TimeChecker start
-                start_time = time.time()
 
                 if self.decision == 'buy':
                     self.decision_buy()
@@ -856,17 +858,10 @@ class Simulator:
                 self.liquidation_check()
                 self.create_ticker_update_db(ticker)
 
-                # TimeChecker fin
-                print(f"Decision checker time {time.time() - start_time}")
-
-            # TimeChecker start
-            start_time = time.time()
-
             self.update_net_worth()
             self.saving_row()
             if self.early_stopping():
                 break
-
             # TimeChecker fin
             print(f"Update checker time {time.time() - start_time}")
 
@@ -875,8 +870,7 @@ class Simulator:
             self.total_df_for_db.to_sql(self.simulation_table_name,
                                     sql_connect('simulator'), index=False, if_exists='replace')
 
-# TODO
-# 시간이 너무 많이드는 부분 - 최소한의 connection 을 limit process 에 적용할 수 있는가 ?
+
 if __name__ == "__main__":
     start_time = time.time()
     s = Simulator(1000000, 0)
@@ -886,7 +880,7 @@ if __name__ == "__main__":
     s.limit_order_setting()
     s.leverage = 10
 
-    # s.algorithm_connection(s.get_ticker_data_from_db(20210407, 20210408, ["random", 1]))
+    # s.algorithm_connection(s.init_total_transaction_data(20210407, 20210408, ["random", 1]))
     s.get_ticker_data_from_db(20210407, 20210408, ["btckrw", "ethkrw"])
     s.algorithm_connection(algo=LimitAlgorithm)
     s.simulation_trading()
