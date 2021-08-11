@@ -5,9 +5,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import time
+import matplotlib.pyplot as plt
+
 # 안정성 테스트
 # (Future, DB init, Save, Limit)
-# y,y,y,y == y,y,n,y
+# y y y y = y y n y 확인.
+
 
 from functools import wraps
 
@@ -25,6 +28,7 @@ def time_checker(func):
 
 
 class Simulator:
+
     #  시뮬레이터의 초기화 부
     #  시작 초기 자본 및 future 거래 여부 설정.
     def __init__(self, init_balance, init_coin_balance):
@@ -57,12 +61,22 @@ class Simulator:
         self.simulator_start_time = None
 
         self.current_time = None
+        self.simulated_time = None
 
         # Total DB 관련 변수
         self.total_order_db = None
         self.total_transaction_db = None
 
+        self.total_order_data = None
+        self.total_transaction_data = None
+
         self.current_transaction_row = None
+        self.total_transaction_columns = None
+        self.total_order_columns = None
+
+        # total numpy object
+        self.total_data = None
+        self.total_data_columns = None
 
         # 총 Data 변수
         self.total_df = None
@@ -250,17 +264,16 @@ class Simulator:
     # 현재가 - 종가.
     # 수수료 계산 - amount 를 적게 처리. - 매수
     # 거래 후 정산금액을 적게 처리 - 매도.
-    @time_checker
+    # @time_checker
     def simulation_trading(self):
 
         self.init_simulation()
 
         # self.current_time 을 가지는 simulation row 를 DB 에 쌓아가며 simulation 을 진행.
-        for i in range(len(self.total_df) - self.observed_rows):
+        for i in range(len(self.total_data) - self.observed_rows):
             # initializing 이 index 0 을 기준으로 start time 을 지정에 유의
             idx = i + 1
-            current_tickers_data = self.total_df[idx:idx + self.observed_rows]
-
+            current_tickers_data = self.total_data[idx:idx + self.observed_rows]
             # 시간 설정 및 이전 열 데이터 Check
             if self.skip_check(current_tickers_data):
                 continue
@@ -270,7 +283,7 @@ class Simulator:
             for ticker in self.ticker_array:
                 self.current_ticker = ticker
                 self.init_ticker_related_vars()
-                self.init_trading_related_vars(ticker, ticker_df=self.init_ticker_df(ticker, current_tickers_data))
+                self.init_trading_related_vars(ticker, ticker_data=self.init_ticker_data(ticker, current_tickers_data))
 
                 # 거래를 시작하기 전, limit order 에 대해 계산할것을 고려
                 # 업데이트가 필요한 변수들 : prev_amount, prev_contract_amount, current_available
@@ -284,6 +297,7 @@ class Simulator:
             self.saving_row()
 
         if not self.save_per_row:
+            self.total_order_db = pd.concat(self.total_transaction_data)
             self.total_transaction_db.to_sql(self.transaction_table_name,
                                              sql_connect('simulator'), index=False, if_exists='replace')
 
@@ -298,6 +312,12 @@ class Simulator:
         print("Initializing DB ... Get Prev Data ...")
         self.sync_prev_data()
         print("Done")
+
+        self.total_data_columns = self.total_df.columns.to_numpy(dtype=str)
+        self.total_transaction_columns = self.total_transaction_db.columns.to_numpy(dtype=str)
+        self.total_order_columns = self.total_order_db.columns.to_numpy(dtype=str)
+
+        self.total_data = self.total_df.to_numpy()
 
     # Simulation 을 위한 DB 의 이름 설정 및 DB 생성
     def simulator_table_setting(self):
@@ -362,23 +382,30 @@ class Simulator:
 
         self.total_order_db = order_db.copy()
 
-    # 이전에 저장된 데이터가 있을 경우, Simulation 에 사용할 Total DB 를 이전것과 동기화
+    # 이전에 저장된 데이터가 있을 경우, Simulation 에 사용할 Total DB 를 이전것과 동기화 및 최종 simulation 진행 시간 업데이트
     def sync_prev_data(self):
         conn = mysql_conn('simulator')
         cur = conn.cursor()
         cur.execute(f"SELECT * FROM {self.transaction_table_name}")
         self.total_transaction_db = pd.DataFrame(cur.fetchall(), columns=[i[0] for i in cur.description])
+        self.total_transaction_data = []
+        self.total_transaction_data.append(self.total_transaction_db)
+        self.simulated_time = self.total_transaction_db.to_numpy()[-1][0]
+
         cur.execute(f"SELECT * FROM {self.order_list_name}")
         self.total_order_db = pd.DataFrame(cur.fetchall(), columns=[i[0] for i in cur.description])
+        self.total_order_data = self.total_order_db.to_numpy().tolist()
+        # self.total_order_data = self.total_order_db.to_numpy()
         cur.close()
         conn.close()
 
     # 이전에 저장된 데이터를 기준으로 Skip 여부 체크
     def skip_check(self, current_tickers_data):
-        self.current_time = current_tickers_data.tail(1).time.item()
-        simulated_time = self.total_transaction_db.tail(1).time.item()
+        # self.current_time = current_tickers_data.tail(1).time.item()
+        self.current_time = current_tickers_data[-1][0]
+        # simulated_time = self.total_transaction_db.tail(1).time.item()
 
-        if str(simulated_time) >= str(self.current_time):
+        if str(self.simulated_time) >= str(self.current_time):
             return True
         else:
             return False
@@ -390,7 +417,8 @@ class Simulator:
         self.total_contract = 0
 
         # 이번 시간 열에 대해 새로 업데이트할 1 row 데이터 프레임 생성
-        self.current_transaction_row = self.total_transaction_db.tail(1).reset_index(drop=True).copy()
+        # self.current_transaction_row = self.total_transaction_db.tail(1).reset_index(drop=True).copy()
+        self.current_transaction_row = self.total_transaction_data[-1].reset_index(drop=True).copy()
 
     # ticker 에 따라 초기화 해주어야 할 변수 초기화
     def init_ticker_related_vars(self):
@@ -439,19 +467,23 @@ class Simulator:
         self.total_order_executed_time = ""
 
     # trading 에 직접적으로 연관된 변수들을 Data 를 참고하여 초기화.
-    def init_trading_related_vars(self, ticker, ticker_df):
+    def init_trading_related_vars(self, ticker, ticker_data):
         # observation rows 에 맞는 ticker_df 가 들어가는 경우, 그에 맞는 self.decision 을 반환.
         print(f"{self.current_time} {ticker} Trading ")
 
-        self.decision = self.algo.decision(ticker_df)['decision']
-        self.limit_low = self.algo.decision(ticker_df)['limit_low']
-        self.limit_high = self.algo.decision(ticker_df)['limit_high']
+        self.decision = self.algo.decision(ticker_data)['decision']
+        self.limit_low = self.algo.decision(ticker_data)['limit_low']
+        self.limit_high = self.algo.decision(ticker_data)['limit_high']
 
-        # current ticker 에 대한 정보
-        self.current_open = float(ticker_df.tail(1)['open'].item())
-        self.current_high = float(ticker_df.tail(1)['high'].item())
-        self.current_low = float(ticker_df.tail(1)['low'].item())
-        self.current_price = float(ticker_df.tail(1)['close'].item())
+        # current ticker 에 대한 정보 - current_price 를 close 로 설정.
+        # self.current_open = float(ticker_df.tail(1)['open'].item())
+        # self.current_high = float(ticker_df.tail(1)['high'].item())
+        # self.current_low = float(ticker_df.tail(1)['low'].item())
+        # self.current_price = float(ticker_df.tail(1)['close'].item())
+        self.current_open = float(ticker_data[-1, 0])
+        self.current_high = float(ticker_data[-1, 1])
+        self.current_low = float(ticker_data[-1, 2])
+        self.current_price = float(ticker_data[-1, 3])
 
         # 바로 이전 시간 행에서 ticker 관련 변수들
         self.prev_amount = float(self.current_transaction_row[f"current_{ticker}_amount"].item())
@@ -462,7 +494,7 @@ class Simulator:
         self.prev_net_worth = float(self.current_transaction_row["net_worth"].item())
 
         # future 설정이 존재할 경우 추가적 변수
-        self.prev_contract_amount = float(self.total_transaction_db.tail(1)[f"{ticker}_contract_amount"].item())
+        self.prev_contract_amount = float(self.current_transaction_row[f"{ticker}_contract_amount"].item())
 
     # 기존 데이터의 columns 를 일반화
     @staticmethod
@@ -480,10 +512,15 @@ class Simulator:
         ticker_df = ticker_df.rename(columns=change_dict)
         return ticker_df
 
+    def init_ticker_data(self, ticker, data):
+        idx = np.where(self.total_data_columns == f"{ticker}_open")[0].item()
+        ticker_data = data[:, idx:idx + 5]
+        return ticker_data
+
     # Decision 에 따른 거래를 시행하기전, limit order list 를 첨고하여 limit order process 진행
     def limit_order_trading(self, ticker):
         if self.limit:
-            self.total_order_db.reset_index(drop=True, inplace=True)
+            # self.total_order_db.reset_index(drop=True, inplace=True)
             self.limit_order_db_check(ticker, self.prev_executed)
             if self.limit_total_gain != 0.0:
                 print(f"Limit Order at {self.total_order_executed_time} be Signed")
@@ -509,30 +546,34 @@ class Simulator:
 
     # limit order price 가 될 경우, 얻어지는 gain 를 계산
     def limit_order_db_check(self, ticker, executed_price):
-        for i in range(len(self.total_order_db)):
-            order_list_ticker = self.total_order_db.loc[i].ticker
+        remove_rows = []
+        for i in range(len(self.total_order_data)):
+            order_list_ticker = self.total_order_data[i][0]
             if str(order_list_ticker) != str(ticker):
                 continue
-            limit_order_amount = self.total_order_db.loc[i].amount
-            limit_order_low = self.total_order_db.loc[i].limit_order_price_low
-            limit_order_high = self.total_order_db.loc[i].limit_order_price_high
+            limit_order_amount = self.total_order_data[i][1]
+            limit_order_high = self.total_order_data[i][2]
+            limit_order_low = self.total_order_data[i][3]
             gap_high = np.abs(self.current_open - limit_order_high)
             gap_low = np.abs(self.current_open - limit_order_low)
-            limit_ordered_time = str(self.total_order_db.loc[i].order_executed_time)
+            limit_ordered_time = str(self.total_order_data[i][4])
 
             if limit_order_high < self.current_high and gap_high < gap_low:
-                self.total_order_db.drop(i, inplace=True)
+                remove_rows.append(self.total_order_data[i])
                 self.limit_total_gain += (limit_order_high - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_high * limit_order_amount
                 self.limit_total_amount += limit_order_amount
                 self.total_order_executed_time += limit_ordered_time + " "
 
             elif limit_order_low > self.current_low and gap_low < gap_high:
-                self.total_order_db.drop(i, inplace=True)
+                remove_rows.append(self.total_order_data[i])
                 self.limit_total_gain += (limit_order_low - executed_price) * limit_order_amount
                 self.limit_total_transaction += limit_order_low * limit_order_amount
                 self.limit_total_amount += limit_order_amount
                 self.total_order_executed_time += limit_ordered_time + " "
+
+        for row in remove_rows:
+            self.total_order_data.remove(row)
 
     # Decision 에 대한 시행:
     def decision_implement(self):
@@ -549,20 +590,12 @@ class Simulator:
             self.decision_stay()
 
     # limit order 의 형성
-    def limit_order_add(self, ticker, amount, executed_time, limit_low, limit_high):
+    def limit_order_add(self, ticker, amount, limit_high, limit_low, executed_time):
         if amount == 0:
             return None
 
-        order_list = defaultdict(list)
-        order_list['ticker'] = [ticker]
-        order_list['amount'] = [amount]
-        order_list['limit_order_price_high'] = [float(limit_high)]
-        order_list['limit_order_price_low'] = [float(limit_low)]
-        order_list['order_executed_time'] = [executed_time]
-        order_list = pd.DataFrame.from_dict(dict(order_list))
-
-        self.total_order_db = self.total_order_db.append(order_list, ignore_index=True)
-        self.total_order_db.reset_index(drop=True, inplace=True)
+        order_list = [ticker, amount, float(limit_high), float(limit_low), executed_time]
+        self.total_order_data.append(order_list)
 
     def decision_buy(self):
         if not self.future:
@@ -649,7 +682,7 @@ class Simulator:
 
         if self.limit and self.decision == 'buy':
             self.limit_order_add(self.current_ticker, self.current_amount,
-                                 self.current_time, self.limit_low, self.limit_high)
+                                 self.limit_high, self.limit_low, self.current_time)
 
     def decision_sell(self):
         # 전량매도.
@@ -744,7 +777,7 @@ class Simulator:
 
         if self.limit and self.decision == 'sell':
             self.limit_order_add(self.current_ticker, self.current_amount,
-                                 self.current_time, self.limit_low, self.limit_high)
+                                 self.limit_high, self.limit_low, self.current_time)
 
     def decision_stay(self):
         self.update_available = self.prev_available
@@ -826,30 +859,109 @@ class Simulator:
 
     # net_worth update
     def update_net_worth(self):
-        update_net_worth = self.current_transaction_row['available'].item() + self.total_eval \
-            if not self.future else self.current_transaction_row["available"].item() + self.total_contract
+        update_net_worth = self.update_available + self.total_eval \
+            if not self.future else self.update_available + self.total_contract
         update_net_worth_db = pd.DataFrame([update_net_worth], columns=['net_worth'])
         self.current_transaction_row.update(update_net_worth_db)
 
     # 모든 ticker 에 대해 만들어진 row 를 저장 - save_per_row 에 따라 다른 시행.
     def saving_row(self):
-        self.total_transaction_db = self.total_transaction_db.append(self.current_transaction_row, ignore_index=True)
+        # self.total_transaction_db = self.total_transaction_db.append(self.current_transaction_row, ignore_index=True)
+        self.total_transaction_data.append(self.current_transaction_row)
         if self.save_per_row:
             self.current_transaction_row.to_sql(self.transaction_table_name,
                                                 sql_connect('simulator'), index=False, if_exists='append')
-            self.total_order_db.to_sql(self.order_list_name, sql_connect('simulator'), index=False,
-                                       if_exists='replace', method='multi')
+            pd.DataFrame(self.total_order_data, columns=self.total_order_columns).to_sql(
+                self.order_list_name, sql_connect('simulator'), index=False, if_exists='replace', method='multi')
+
+
+# ---
+
+
+def render_results(transaction_table_name, total_table_name, *tickers):
+    conn = mysql_conn('simulator')
+    cur = conn.cursor()
+    sql = f"SELECT * FROM {transaction_table_name}"
+    cur.execute(sql)
+    total_results = pd.DataFrame(cur.fetchall(), columns=[i[0] for i in cur.description])
+    total_results = total_results[1:]
+
+    sql = f"SELECT * FROM {total_table_name}"
+    cur.execute(sql)
+    total_data = pd.DataFrame(cur.fetchall(), columns=[i[0] for i in cur.description])
+    total_data = total_data[1:]
+
+    for ticker in tickers:
+        print(f"Rendering {ticker} simulation results")
+        render_ticker_results(ticker, total_results, total_data)
+
+    print("Done")
+
+
+def render_ticker_results(ticker, total_results, total_data):
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(nrows=4, ncols=1,
+                                             gridspec_kw={'hspace': 0.1, 'height_ratios': [2, 1, 1, 2]},
+                                             figsize=(13, 10))
+
+    ax1.plot(total_results[f"current_{ticker}_price"], color="k", alpha=0.5, label=f"{ticker[:-3]}_price")
+
+    x = np.argwhere(total_results[f"current_{ticker}_amount"].diff().fillna(0).to_numpy() > 0)
+    y = total_results[f"current_{ticker}_price"].to_numpy()[x]
+    ax1.scatter(x, y, s=5, color='r', alpha=0.5)
+
+    x = np.argwhere(total_results[f"current_{ticker}_amount"].diff().fillna(0).to_numpy() < 0)
+    y = total_results[f"current_{ticker}_price"].to_numpy()[x]
+    ax1.scatter(x, y, s=5, color='b', alpha=0.5)
+
+    ax1.set_xticklabels([])
+    ax1.set_xticks([])
+    ax1.legend(loc='upper left', fontsize=7)
+
+    from matplotlib.patches import Patch
+
+    colors = ['r' if i > 0 else 'b' for i in total_data[f"{ticker}_close"] - total_data[f"{ticker}_open"]]
+    legend = ax2.legend(handles=[Patch(facecolor='red'), Patch(facecolor='blue')], labels=['', 'volume'], ncol=2,
+                        handlelength=1, columnspacing=-0.75, fontsize=7)
+
+    ax2.bar(np.arange(len(total_data)), total_data[f"{ticker}_volume"].to_numpy(), color=colors)
+
+    ax2.add_artist(legend)
+    ax2.set_xticklabels([])
+    ax2.set_xticks([])
+
+    ax3.plot(total_results[f"current_{ticker}_amount"].to_numpy(), color="k", alpha=0.6, label=f"{ticker} amount")
+    ax3.set_xticklabels([])
+    ax3.set_xticks([])
+    ax3.legend(loc='upper left', fontsize=7)
+
+    ax4.plot(total_results.net_worth.to_numpy(), color="k", alpha=0.8, label='net worth')
+    ax4.set_xticks([1, len(total_results)])
+    ax4.set_xticklabels([str(total_results.time.to_numpy()[1]), str(total_results.time.to_numpy()[-1])])
+    ax4.legend(loc='upper left', fontsize=7)
+
+    plt.show()
 
 
 if __name__ == "__main__":
-    start_time = time.time()
-    s = Simulator(1000000, 0)
-    s.setting()
-    s.leverage = 10
 
-    s.init_total_transaction_data(20210407, 20210408, "btckrw", "ethkrw")
-    s.algorithm_connection(algo=LimitAlgorithm)
-    s.simulation_trading()
+    if input(" Mode : 1. Simulation / 2. Rendering") == "1":
+        start_time = time.time()
+        s = Simulator(1000000, 0)
+        s.setting()
+        s.leverage = 10
+        s.init_total_transaction_data(20210407, 20210408, "btckrw", "ethkrw")
+        s.algorithm_connection(algo=LimitAlgorithm)
+        s.simulation_trading()
+        print(f"time {time.time() - start_time}")
 
-    print(f"time {time.time() - start_time}")
-    # 1440분 10 종목 시뮬 시간 ~ 190초 ~~ 7일 25분정도,,
+        start_time = time.time()
+        render_results(s.transaction_table_name, s.total_table_name,"btckrw", "ethkrw")
+        print(f"time {time.time() - start_time}")
+
+    else:
+        start_time = time.time()
+        render_results('20210407_20210408_btceth_simulation_future_limit_saved', '20210407_20210408_btceth', "btckrw", "ethkrw")
+        print(f"time {time.time() - start_time}")
+
+    # 1440분 10 종목 시뮬 시간 ~ 337s
+    # none save rows, 2 종목 28.
