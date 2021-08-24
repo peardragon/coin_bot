@@ -29,12 +29,15 @@ def sql_connect(db_name):
     return db_engine
 
 
-def table_exist(db_name, table_name, engine=None):
-    if engine is None:
-        engine = sql_connect(db_name)
-
+def table_exist(db_name, table_name):
+    conn = mysql_conn(db_name)
+    cur = conn.cursor()
     sql = f"select 1 from information_schema.tables where table_schema = '{db_name}' and table_name = '{table_name}'"
-    rows = engine.execute(sql).fetchall()
+    cur.execute(sql)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
     if len(rows) == 1:
         return True
     else:

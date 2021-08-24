@@ -196,7 +196,6 @@ class Simulator:
         :return: None
         """
         self.ticker_array = np.array(input_tickers)
-        db_check('simulator')
         ticker_name = ''.join([ticker[:-3] for ticker in input_tickers])
         total_table_name = f"{start}_{finish}_" + ticker_name
         self.total_table_name = total_table_name
@@ -297,9 +296,12 @@ class Simulator:
             self.saving_row()
 
         if not self.save_per_row:
-            self.total_order_db = pd.concat(self.total_transaction_data)
+            self.total_transaction_db = pd.concat(self.total_transaction_data)
             self.total_transaction_db.to_sql(self.transaction_table_name,
                                              sql_connect('simulator'), index=False, if_exists='replace')
+
+            pd.DataFrame(self.total_order_data, columns=self.total_order_columns).to_sql(
+                self.order_list_name, sql_connect('simulator'), index=False, if_exists='replace', method='multi')
 
     # --- Reset Simulation Section
 
@@ -893,7 +895,8 @@ def render_results(transaction_table_name, total_table_name, *tickers):
 
     for ticker in tickers:
         print(f"Rendering {ticker} simulation results")
-        render_ticker_results(ticker, total_results, total_data)
+        # render_ticker_results(ticker, total_results, total_data)
+        render_ticker_results_plotly(ticker, total_results, total_data)
 
     print("Done")
 
@@ -942,6 +945,61 @@ def render_ticker_results(ticker, total_results, total_data):
     plt.show()
 
 
+def render_ticker_results_plotly(ticker, total_results, total_data):
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    total_data["interval_max"] = total_data["high"][::-1].rolling(60).max()[::-1]
+
+    fig = make_subplots(rows=4, cols=1,
+                        vertical_spacing=0.2, row_heights=[0.5, 0.1, 0.1, 0.2])
+
+    fig.add_trace(go.Scatter(x=total_results["time"], y=total_results[f"current_{ticker}_price"],
+                             mode='lines', marker=dict(color="black"), opacity=0.5,
+                             name=f"{ticker[:-3]}_price"), row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=total_results["time"], y=total_results["interval_max"],
+                             mode='lines', marker=dict(color="blue"), opacity=0.5,
+                             name=f"interval max"), row=1, col=1)
+
+    idx = np.argwhere(total_results[f"current_{ticker}_amount"].diff().fillna(0).to_numpy() > 0).flatten()
+    x = total_results["time"].iloc[idx]
+    y = total_results[f"current_{ticker}_price"].iloc[idx]
+    fig.add_trace(go.Scatter(x=x, y=y,
+                             mode='markers', marker=dict(size=12), fillcolor='red', opacity=0.5,
+                             name=f"Buy"), row=1, col=1)
+
+    idx = np.argwhere(total_results[f"current_{ticker}_amount"].diff().fillna(0).to_numpy() < 0).flatten()
+    x = total_results["time"].iloc[idx]
+    y = total_results[f"current_{ticker}_price"].iloc[idx]
+
+    fig.add_trace(go.Scatter(x=x, y=y,
+                             mode='markers', marker=dict(size=12), fillcolor='blue', opacity=0.5,
+                             name=f"Sell"), row=1, col=1)
+
+    colors = ['red' if i > 0 else 'blue' for i in total_data[f"{ticker}_close"] - total_data[f"{ticker}_open"]]
+
+    fig.add_trace(go.Bar(x=total_data["time"], y=total_data[f"{ticker}_volume"],
+                         marker=dict(color=colors)), row=2, col=1)
+
+    fig.add_trace(go.Scatter(x=total_results["time"], y=total_results[f"current_{ticker}_amount"],
+                             mode='lines', marker=dict(color='black'), opacity=0.6,
+                             name=f"{ticker} amount"), row=3, col=1)
+
+    fig.add_trace(go.Scatter(x=total_results["time"], y=total_results.net_worth,
+                             mode='lines', marker=dict(color='black'), opacity=0.8,
+                             name='net worth'), row=4, col=1)
+
+    fig.update_layout(xaxis1_rangeslider_visible=True, xaxis1_rangeslider_thickness=0.07)
+    fig.update_layout(xaxis2_rangeslider_visible=True, xaxis2_rangeslider_thickness=0.07)
+    fig.update_layout(xaxis3_rangeslider_visible=True, xaxis2_rangeslider_thickness=0.07)
+    fig.update_layout(xaxis4_rangeslider_visible=True, xaxis2_rangeslider_thickness=0.07)
+
+
+    fig.show()
+    fig.write_html(f"./simulation_results_{ticker}.html")
+
+
 if __name__ == "__main__":
 
     if input(" Mode : 1. Simulation / 2. Rendering") == "1":
@@ -949,18 +1007,18 @@ if __name__ == "__main__":
         s = Simulator(1000000, 0)
         s.setting()
         s.leverage = 10
-        s.init_total_transaction_data(20210407, 20210408, "btckrw", "ethkrw")
-        s.algorithm_connection(algo=LimitAlgorithm)
+        s.init_total_transaction_data(20201020, 20201023, "btckrw")
+        s.algorithm_connection(algo=LGBMAlgorithm)
         s.simulation_trading()
         print(f"time {time.time() - start_time}")
 
         start_time = time.time()
-        render_results(s.transaction_table_name, s.total_table_name,"btckrw", "ethkrw")
+        render_results(s.transaction_table_name, s.total_table_name,"btckrw")
         print(f"time {time.time() - start_time}")
 
     else:
         start_time = time.time()
-        render_results('20210407_20210408_btceth_simulation_future_limit_saved', '20210407_20210408_btceth', "btckrw", "ethkrw")
+        render_results('20210407_20210408_btceth_simulation_limit', '20210407_20210408_btceth', "btckrw", "ethkrw")
         print(f"time {time.time() - start_time}")
 
     # 1440분 10 종목 시뮬 시간 ~ 337s

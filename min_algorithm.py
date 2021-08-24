@@ -1,6 +1,7 @@
 import pandas as pd
 import random
-
+import lightgbm_model
+from sklearn.preprocessing import MinMaxScaler
 
 # 매수 주문 시 정산금액 = 체결금액(주문수량 x 주문가격) + 거래수수료
 # 예시) 1BTC 를 10,000,000원에 매수(거래수수료 0.139%) 시 내 계정에 1BTC 반영, 10,013,900원 차감
@@ -10,6 +11,15 @@ import random
 # 예시) 1BTC 를 10,000,000원에 매도(거래수수료 0.139%) 시 내 계정에 9,986,100원 반영, 1 BTC 차감
 # 매도시, 원하는 만큼 정확한 양이 매도됨. 거래시 수수료 발생 .
 # fee = {"KRW": 0.05, "BTC": 0.25, "USDT": 0.05}
+
+
+#input data : ndarry
+# [[ open low high close volume ],
+#  [ open low high close volume ],
+#  [ open low high close volume ],
+#  ...
+#  [ open low high close volume ]]
+
 
 # Limit order - 0.35
 class Algorithm:
@@ -22,14 +32,49 @@ class Algorithm:
 
         # 필수 변수
 
-    def decision(self, data:pd.DataFrame):
+    def decision(self, data: pd.DataFrame):
         decision = random.choice(['buy', 'sell', 'stay', "close"])
         current_price = data.tail(1).close.item()
         limit_price_lower = current_price * 0.95
         limit_price_upper = current_price * 1.05
 
-        return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low' : limit_price_lower}
+        return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low': limit_price_lower}
 
+import pickle
+import numpy as np
+
+def restore_model(filename):
+    with open(filename, 'rb') as model:
+        loaded_model = pickle.load(model)
+    return loaded_model
+
+
+class LGBMAlgorithm:
+    def __init__(self):
+        self.__name__ ="LGBM_algo"
+        self.observed_rows_num = 60
+        self.execute_ratio_buy = 0.3
+        self.execute_ratio_sell = 1
+        self.model = restore_model('./lgbm_model/20201010_20201020/optimized_model_interval_60_rate_1.sav')
+
+    def decision(self, data):
+        # open low high close volume
+        curr = data[:, [0, 2, 4]]
+        scaled_data = MinMaxScaler().fit_transform(X=curr)
+        X = np.asarray(scaled_data.flatten(), dtype=float).reshape(1, -1)
+        pred_proba = self.model.predict_proba(X)
+        pred = [i > 0.8 for i in pred_proba[:, 1]]
+
+        if pred[0] is True:
+            decision = 'buy'
+        else:
+            decision = "stay"
+        # open low high close volume
+        current_price = data[-1, 3]
+        limit_price_lower = current_price * 0.9875
+        limit_price_upper = current_price * 1.0125
+
+        return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low': limit_price_lower}
 
 class LimitAlgorithm:
     def __init__(self):
@@ -41,15 +86,14 @@ class LimitAlgorithm:
 
         # 필수 변수
 
-    def decision(self, data:pd.DataFrame):
+    def decision(self, data):
         decision = random.choice(['buy', 'stay', 'stay', 'stay', 'stay'])
-        current_price = data.tail(1).close.item()
+        # open low high close volume
+        current_price = data[-1, 3]
         limit_price_lower = current_price * 0.99
         limit_price_upper = current_price * 1.01
 
-        return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low' : limit_price_lower}
-
-
+        return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low': limit_price_lower}
 
 
 class Algorithm1:
@@ -128,7 +172,6 @@ class UpperMomentumAlgo:
             return "stay", None
 
 
-
 class RandomAlgorithm:
 
     def __init__(self):
@@ -140,6 +183,7 @@ class RandomAlgorithm:
         choice = random.choice(['buy', 'sell', 'stay'])
 
         return choice
+
 
 # ccxt 의 아웃풋은 list 형태이므로, simulation 부분에서 dataframe.values.tolist()로 list output을 받는다고 하자.
 # 순서는 0: time 1: open 2: low 3: high 4: close 5: volume
