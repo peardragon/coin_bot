@@ -5,6 +5,8 @@ import pymysql
 
 pymysql.install_as_MySQLdb()
 
+import MySQLdb
+
 
 def db_check(db_name):
     db_conn = db_connection()
@@ -30,6 +32,8 @@ def sql_connect(db_name):
 
 
 def table_exist(db_name, table_name):
+    db_check(db_name)
+
     conn = mysql_conn(db_name)
     cur = conn.cursor()
     sql = f"select 1 from information_schema.tables where table_schema = '{db_name}' and table_name = '{table_name}'"
@@ -59,7 +63,6 @@ def db_connection():
     return db_conn
 
 
-import MySQLdb
 
 
 def mysql_cursor(db_name):

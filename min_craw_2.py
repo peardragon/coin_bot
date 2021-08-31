@@ -41,7 +41,7 @@ class Collector:
     @staticmethod
     # Update 여부를 확인할 수 있는 DB TABLE 생성. 있을경우 pass
     def db_update_checker_init():
-        if not table_exist("setting", "update_checker", sql_connect("setting")):
+        if not table_exist("setting", "update_checker"):
             tickers = defaultdict(list)
             ticker_data = pyupbit.get_tickers()
             iteration = 0

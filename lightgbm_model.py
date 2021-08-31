@@ -9,7 +9,7 @@ from lightgbm import LGBMClassifier
 import mysql_func
 from datetime import datetime
 import pickle
-from sklearn.metrics import recall_score, accuracy_score
+from sklearn.metrics import recall_score, accuracy_score, precision_score
 from sklearn.preprocessing import MinMaxScaler
 
 import plotly.graph_objects as go
@@ -36,6 +36,7 @@ def get_sql_data(ticker, start_time, finish_time):
     conn.close()
     return res_sql
 
+
 def train_data_processing(sql_data, min_interval, rate_min, render=False):
     X = []
 
@@ -45,9 +46,10 @@ def train_data_processing(sql_data, min_interval, rate_min, render=False):
     res_df["interval_max"] = res_df.high[::-1].rolling(min_interval).max()[::-1]
     res_df["interval_min"] = res_df.low[::-1].rolling(min_interval).min()[::-1]
 
-    res_df["rate"] = ((res_df.interval_max - res_df.open) / res_df.open) * 100
+    # res_df["rate"] = ((res_df.interval_max - res_df.open) / res_df.open) * 100
+    res_df["rate"] = ((res_df.interval_max - res_df.close) / res_df.close) * 100
+
     res_df["label"] = res_df.rate > rate_min
-    y = res_df.label.to_numpy()[:-min_interval]
 
     data_len = np.shape(res_arr)[0]
 
@@ -57,11 +59,13 @@ def train_data_processing(sql_data, min_interval, rate_min, render=False):
         # make array with 'open' 'high' 'volume' data, and flatten()
         if not render:
             scaled_data = MinMaxScaler().fit_transform(X=curr)
-        else:
+        else: # if render
             scaled_data = curr
         X.append(scaled_data.flatten())
 
     X = np.asarray(X, dtype=float)
+    # [0:interval] 까지의 data 를 통해 interval 열 의 label 을 y 로
+    y = res_df.label.to_numpy()[min_interval:]
 
     return X, y
 
@@ -76,16 +80,22 @@ class Objective(object):
     def __call__(self, trial):
         X_train, X_test, y_train, y_test = train_test_split(self.X, self.y, test_size=0.3)
         boosting_type = trial.suggest_categorical('boosting_type', ['gbdt', 'dart', 'goss'])
-        n_estimators = trial.suggest_int('n_estimators', 100, 1000, step=10)
-        max_depth = trial.suggest_int('max_depth', 3, 20, step=1)
+        n_estimators = trial.suggest_int('n_estimators', 100, 2000, step=10)
+        max_depth = trial.suggest_int('max_depth', 3, 15, step=1)
+        num_leaves = trial.suggest_int('num_leaves', 2, 2**int(max_depth/2), log=True)
         lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
         clf = LGBMClassifier(boosting_type=boosting_type, n_estimators=n_estimators,
-                             max_depth=max_depth, learning_rate=lr, metric="accuracy", verbose=1)
+                             max_depth=max_depth, learning_rate=lr, num_leaves=num_leaves,
+                             metric="accuracy", verbose=1, force_col_wise=True,
+                             num_threads=8)
 
         clf.fit(X_train, y_train)
 
-        score = accuracy_score(y_test, clf.predict(X_test))
+        # score = accuracy_score(y_test, clf.predict(X_test))
+        # score = precision_score(y_test, clf.predict(X_test), zero_division=0)
+        score = recall_score(y_test, clf.predict(X_test), zero_division=0)
 
+        print("Precision Score : ", score)
         # score = sklearn.model_selection.cross_val_score(clf, X_train, y_train, n_jobs=-1,
         #                                                 verbose=3, scoring="accuracy", cv=3)
 
@@ -114,13 +124,20 @@ def createFolder(directory):
     except OSError:
         print("Error Occured")
 
+# def rate_config(res_df):
+#     res_df
 
-## Configs ## #
+
+# ## Configs ## #
 if __name__ == "__main__":
-    start = "20201010"
-    finish = "20201020"
-    interval = 60
-    rate = 1
+    start = "20210814"
+    finish = "20210824"
+
+    start_eval = "20210825"
+    finish_eval = "20210826"
+
+    interval = 80
+    rate = 0.7
 
     # ## Configs ## #
     date_path = start + "_" + finish + "/"
@@ -129,17 +146,18 @@ if __name__ == "__main__":
     model_name = "optimized_model" + configs + ".sav"
     file_path = "./lgbm_model/" + date_path + model_name
 
-    if input(" 1. Optimizing Model / 2. Restore Saved Model") == "1":
+    if input(" 1. Optimizing Model / 2. Restore Saved Model : ") == "1":
         res = get_sql_data("btckrw", start, finish)
 
         ticker_data = pd.DataFrame(res, columns=['time', 'open', 'low', 'high', 'close', 'volume'])
         ticker_data["interval_max"] = ticker_data.high[::-1].rolling(interval).max()[::-1]
+        ticker_data = ticker_data[interval:].reset_index(drop=True)
 
         X, y = train_data_processing(res, interval, rate)
         X_origin, y_origin = train_data_processing(res, interval, rate, render=False)
 
         study = optuna.create_study(direction="maximize")
-        study.optimize(Objective(X, y), n_trials=100, timeout=15)
+        study.optimize(Objective(X, y), n_trials=100, timeout=600)
 
         best_clf_ = restore_model_best_params(study.best_trial.number)
 
@@ -147,9 +165,14 @@ if __name__ == "__main__":
 
         best_clf_.fit(X_train, y_train, verbose=2)
 
+        print("Optimize and Fit Finish : Save model")
+
+        createFolder(directory_path)
+
         with open(file_path, 'wb') as file:
             pickle.dump(best_clf_, file)
 
+        print("Model Check with train data ")
         # pred_proba = best_clf_.predict_proba(X_test)
         # pred = [i > 0.8 for i in pred_proba[:, 1]]
         #TODO 뭔가 학습이 잘 안된거 같음. 실제로 라벨과 비교 필요 - y_test 와 비교
@@ -164,29 +187,29 @@ if __name__ == "__main__":
         idx_train_origin = np.argwhere(np.array(y_train) == 1).flatten()
         idx_train_pred = np.argwhere(np.array(train_pred) == 1).flatten()
 
-        idx_test_origin = np.argwhere(np.array(y_test) == 1).flatten()+ len(X_train)
+        idx_test_origin = np.argwhere(np.array(y_test) == 1).flatten() + len(X_train)
         idx_test_pred = np.argwhere(np.array(test_pred) == 1).flatten() + len(X_train)
 
         fig = go.Figure()
 
         fig.add_trace(go.Scatter(x=ticker_data["time"].iloc[idx_train_origin],
-                                 y=ticker_data["open"].iloc[idx_train_origin],
+                                 y=ticker_data["close"].iloc[idx_train_origin],
                                  mode="markers", marker=dict(color="black", size=10), opacity=0.7, name="train label"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"].iloc[idx_test_origin],
-                                 y=ticker_data["open"].iloc[idx_test_origin],
+                                 y=ticker_data["close"].iloc[idx_test_origin],
                                  mode="markers", marker=dict(color="black", size=10), opacity=0.7, name="test label"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"].iloc[idx_train_pred],
-                                 y=ticker_data["open"].iloc[idx_train_pred],
+                                 y=ticker_data["close"].iloc[idx_train_pred],
                                  mode="markers", marker=dict(color="red", size=12), opacity=0.7, name="train decision"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"].iloc[idx_test_pred],
-                                 y=ticker_data["open"].iloc[idx_test_pred],
+                                 y=ticker_data["close"].iloc[idx_test_pred],
                                  mode="markers", marker=dict(color="blue", size=12), opacity=0.7, name="test decision"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"][:len(close_train)],
-                                 y=ticker_data["open"][:len(close_train)],
+                                 y=ticker_data["close"][:len(close_train)],
                                  mode="lines", marker=dict(color="black"), opacity=0.3, name="ticker data"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"][:len(close_train)],
@@ -194,18 +217,18 @@ if __name__ == "__main__":
                                  mode='lines', marker=dict(color="blue"), opacity=0.5, name=f"interval max"))
 
         fig.update_layout(xaxis_rangeslider_visible=True)
+        fig.show()
         fig.write_html("./lightgbm_results_train.html")
 
         recall_score(test_pred, y_test)
     else:
-        start_eval = "20201021"
-        finish_eval = "20201024"
 
         print(f"load model fit by data : {start_eval} ~ {finish_eval}")
         res = get_sql_data("btckrw", start_eval, finish_eval)
 
         ticker_data = pd.DataFrame(res, columns=['time', 'open', 'low', 'high', 'close', 'volume'])
         ticker_data["interval_max"] = ticker_data.high[::-1].rolling(interval).max()[::-1]
+        ticker_data = ticker_data[interval:].reset_index(drop=True)
 
         X, y = train_data_processing(res, interval, rate)
         X_origin, y_origin = train_data_processing(res, interval, rate, render=True)
@@ -220,11 +243,11 @@ if __name__ == "__main__":
         idx_origin = np.argwhere(np.array(test_pred) == 1).flatten()
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=ticker_data["time"].iloc[idx_origin],
-                                 y=ticker_data["open"].iloc[idx_origin],
+                                 y=ticker_data["close"].iloc[idx_origin],
                                  mode="markers", marker=dict(color="red", size=12), opacity=0.7, name="decision"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"],
-                                 y=ticker_data["open"],
+                                 y=ticker_data["close"],
                                  mode="lines", marker=dict(color="black"), opacity=0.3, name="ticker"))
 
         fig.add_trace(go.Scatter(x=ticker_data["time"],
@@ -232,4 +255,5 @@ if __name__ == "__main__":
                                  mode='lines', marker=dict(color="blue"), opacity=0.5, name=f"interval max"))
 
         fig.update_layout(xaxis_rangeslider_visible=True)
+        fig.show()
         fig.write_html("./lightgbm_results_pred.html")

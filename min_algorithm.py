@@ -50,31 +50,41 @@ def restore_model(filename):
 
 
 class LGBMAlgorithm:
-    def __init__(self):
+    def __init__(self, config: dict):
         self.__name__ ="LGBM_algo"
-        self.observed_rows_num = 60
-        self.execute_ratio_buy = 0.3
+        self.observed_rows_num = config["interval"]
+        self.execute_ratio_buy = 0.5
         self.execute_ratio_sell = 1
-        self.model = restore_model('./lgbm_model/20201010_20201020/optimized_model_interval_60_rate_1.sav')
+        self.model = restore_model(f'./lgbm_model/{config["time"]}/'
+                                   f'optimized_model_interval_{str(config["interval"])}_rate_{str(config["rate"])}.sav')
+        self.rate = config["rate"]
+        self.num = 0
 
     def decision(self, data):
         # open low high close volume
+        X = []
         curr = data[:, [0, 2, 4]]
         scaled_data = MinMaxScaler().fit_transform(X=curr)
-        X = np.asarray(scaled_data.flatten(), dtype=float).reshape(1, -1)
-        pred_proba = self.model.predict_proba(X)
-        pred = [i > 0.8 for i in pred_proba[:, 1]]
+        X.append(scaled_data.flatten())
+        X = np.asarray(X, dtype=float)
 
-        if pred[0] is True:
+        # X = np.asarray(scaled_data.flatten(), dtype=float).reshape(1,-1)
+        # pred_proba = self.model.predict_proba(X)
+        # pred = [i > 0.8 for i in pred_proba[:, 1]]
+        pred = self.model.predict(X)
+
+        if pred[0] == True:
             decision = 'buy'
         else:
             decision = "stay"
         # open low high close volume
         current_price = data[-1, 3]
-        limit_price_lower = current_price * 0.9875
-        limit_price_upper = current_price * 1.0125
+        limit_price_lower = current_price * (1-self.rate/100)
+        limit_price_upper = current_price * (1+self.rate/100)
 
+        self.num += 1
         return {'decision': decision, 'limit_high': limit_price_upper, 'limit_low': limit_price_lower}
+
 
 class LimitAlgorithm:
     def __init__(self):

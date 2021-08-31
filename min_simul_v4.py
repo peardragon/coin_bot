@@ -442,10 +442,10 @@ class Simulator:
     def init_trading_related_vars(self, ticker, ticker_df):
         # observation rows 에 맞는 ticker_df 가 들어가는 경우, 그에 맞는 self.decision 을 반환.
         print(f"{self.current_time} {ticker} Trading ")
-
-        self.decision = self.algo.decision(ticker_df)['decision']
-        self.limit_low = self.algo.decision(ticker_df)['limit_low']
-        self.limit_high = self.algo.decision(ticker_df)['limit_high']
+        decisions = self.algo.decision(ticker_df)
+        self.decision = decisions['decision']
+        self.limit_low = decisions['limit_low']
+        self.limit_high = decisions['limit_high']
 
         # current ticker 에 대한 정보
         self.current_open = float(ticker_df.tail(1)['open'].item())
