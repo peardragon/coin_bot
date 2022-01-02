@@ -191,6 +191,8 @@ class Collector:
 
             # unix time difference to day_ delta
             time_delta_day = int((fin_time_unix - start_time_unix) / (60 * 60 * 24))
+            if time_delta_day == 0:
+                time_delta_day = 1
             divide_int = (fin_time_unix - start_time_unix) / time_delta_day
 
             # 업데이트까지 완전히 되기위해 time_delta_day 만큼 일 단위의 업데이트가 필요.
@@ -241,8 +243,14 @@ class Collector:
     # 데이터 입력이 오류로 인해 잘못되었을 경우, 완전히 Ticker DB 를 새로 받기 위해서는,
     # update_checker 에서 해당 ticker 의 update_date_time 을 0 으로 변경하고, table 삭제 후 .py 실행
 
+    def min_craw_db_ticker(self, start_time, fin_time, ticker):
+        init_ticker, ticker = self.ticker_trans_for_craw(ticker)
+        self.coin_min_craw(ticker, init_ticker, start_time, fin_time)
+
+
 
 if __name__ == '__main__':
+
     collector = Collector()
     # 인풋은 반드시 %Y-%m-%d 00:00:00 타입의 시작과 끝값.
 

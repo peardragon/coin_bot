@@ -2,7 +2,7 @@ import pandas as pd
 import random
 import lightgbm_model
 from sklearn.preprocessing import MinMaxScaler
-
+from lightgbm_model import train_data_processing_1
 # 매수 주문 시 정산금액 = 체결금액(주문수량 x 주문가격) + 거래수수료
 # 예시) 1BTC 를 10,000,000원에 매수(거래수수료 0.139%) 시 내 계정에 1BTC 반영, 10,013,900원 차감
 # 매수시, 원하는 만큼 정확한 양이 매수됨. 거래시 수수료 발생 .
@@ -62,15 +62,7 @@ class LGBMAlgorithm:
 
     def decision(self, data):
         # open low high close volume
-        X = []
-        curr = data[:, [0, 2, 4]]
-        scaled_data = MinMaxScaler().fit_transform(X=curr)
-        X.append(scaled_data.flatten())
-        X = np.asarray(X, dtype=float)
-
-        # X = np.asarray(scaled_data.flatten(), dtype=float).reshape(1,-1)
-        # pred_proba = self.model.predict_proba(X)
-        # pred = [i > 0.8 for i in pred_proba[:, 1]]
+        X = train_data_processing_1(data)
         pred = self.model.predict(X)
 
         if pred[0] == True:
