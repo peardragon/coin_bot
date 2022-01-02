@@ -1004,7 +1004,7 @@ def render_ticker_results_plotly(ticker, total_results, total_data, interval):
 
 
     fig.show()
-    fig.write_html(f"./simulation_results_{ticker}.html")
+    fig.write_html(f"./simulation_results/simulation_results_{ticker}.html")
 
 
 if __name__ == "__main__":

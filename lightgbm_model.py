@@ -443,7 +443,7 @@ if __name__ == "__main__":
         best_clf_ = restore_model(filename=file_path)
         test_pred = best_clf_.predict(X)
 
-        render_eval("./lightgbm_results_pred.html", ticker_data, y, test_pred)
+        render_eval("./lgbm_results/lightgbm_results_pred.html", ticker_data, y, test_pred)
 
     elif arg == "3":
 
@@ -526,7 +526,7 @@ if __name__ == "__main__":
             # print(recall_score(y, pred))
             # print(precision_score(y, pred))
 
-            render_eval("./lightgbm_results_train_eval2.html", ticker_data, y, pred)
+            render_eval("./lgbm_results/lightgbm_results_train_eval2.html", ticker_data, y, pred)
 
 
 
